@@ -1,0 +1,127 @@
+name: analyze-url
+
+on:
+  workflow_dispatch:
+    inputs:
+      url:
+        description: "URL to analyze"
+        required: true
+        type: string
+      run_token:
+        description: "Optional caller-supplied token (echoed into the run for correlation)"
+        required: false
+        type: string
+  repository_dispatch:
+    types: [analyze-url]
+
+concurrency:
+  group: analyze-${{ github.event.inputs.url || github.event.client_payload.url }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  analyze:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Resolve input URL
+        id: input
+        run: |
+          URL="${{ github.event.inputs.url || github.event.client_payload.url }}"
+          RUN_TOKEN="${{ github.event.inputs.run_token || github.event.client_payload.run_token }}"
+          echo "url=$URL" >> "$GITHUB_OUTPUT"
+          echo "run_token=$RUN_TOKEN" >> "$GITHUB_OUTPUT"
+          echo "Target URL: $URL"
+          echo "Run token:  $RUN_TOKEN"
+
+      - name: Validate and normalize URL
+        id: validate
+        run: python scripts/validate_input.py --url "${{ steps.input.outputs.url }}"
+
+      - name: Fail fast if URL blocked
+        if: steps.validate.outputs.ok != 'true'
+        run: |
+          echo "::error::URL validation failed: $(cat out/target.json)"
+          exit 1
+
+      # Collectors — each one always writes its JSON and exits 0, even on error.
+      # A failure in one source does NOT stop the others.
+      - name: Collect — raw HTML
+        run: python scripts/collect_html.py --url "${{ steps.validate.outputs.url }}"
+        continue-on-error: true
+
+      - name: Collect — urlscan.io
+        env:
+          URLSCAN_API_KEY: ${{ secrets.URLSCAN_API_KEY }}
+        run: python scripts/collect_urlscan.py --url "${{ steps.validate.outputs.url }}"
+        continue-on-error: true
+
+      - name: Collect — AbuseIPDB
+        env:
+          ABUSEIPDB_API_KEY: ${{ secrets.ABUSEIPDB_API_KEY }}
+        run: python scripts/collect_abuseipdb.py --url "${{ steps.validate.outputs.url }}"
+        continue-on-error: true
+
+      - name: Collect — Google Safe Browsing
+        env:
+          GSB_API_KEY: ${{ secrets.GSB_API_KEY }}
+        run: python scripts/collect_gsb.py --url "${{ steps.validate.outputs.url }}"
+        continue-on-error: true
+
+      - name: Collect — WHOIS
+        run: python scripts/collect_whois.py --url "${{ steps.validate.outputs.url }}"
+        continue-on-error: true
+
+      - name: Scan — YARA-style patterns
+        run: python scripts/pattern_scan.py
+        continue-on-error: true
+
+      - name: Verdict — Claude
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: python scripts/claude_verdict.py --url "${{ steps.validate.outputs.url }}"
+
+      - name: Render report
+        run: python scripts/render_report.py --url "${{ steps.validate.outputs.url }}"
+
+      - name: Print summary to step log
+        if: always()
+        run: |
+          if [ -f out/summary.json ]; then
+            echo "### Verdict" >> "$GITHUB_STEP_SUMMARY"
+            python -c "
+          import json
+          s = json.load(open('out/summary.json'))
+          print(f\"- **URL:** \`{s['url_defanged']}\`\")
+          print(f\"- **Verdict:** **{s['verdict'].upper()}** (confidence {s['confidence']:.2f})\")
+          print(f\"- **Action:** {s['recommended_action']}\")
+          print(f\"- **Summary:** {s['summary']}\")
+          print()
+          print('### Key indicators')
+          for i in s.get('key_indicators', []) or ['(none)']:
+              print(f'- {i}')
+          " >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Upload report artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: analyze-url-${{ github.run_id }}
+          path: out/
+          retention-days: 30

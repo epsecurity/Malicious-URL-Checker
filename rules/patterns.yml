@@ -1,0 +1,157 @@
+# YARA-style regex rules. Each hit contributes a feature to Claude's context.
+# Tune by editing this file only — no code changes needed.
+#
+# target: html | scripts | forms | urls | title | all
+# severity: LOW | MEDIUM | HIGH | CRITICAL
+
+rules:
+
+  # === Obfuscation / suspicious JS ===
+  - id: JS_EVAL
+    description: "JavaScript eval() — often used to execute dynamically-constructed code"
+    pattern: "\\beval\\s*\\("
+    target: scripts
+    severity: MEDIUM
+    tags: [obfuscation, js]
+
+  - id: JS_ATOB_CHAIN
+    description: "atob() base64 decoding — common malware unpacker pattern"
+    pattern: "\\batob\\s*\\("
+    target: scripts
+    severity: MEDIUM
+    tags: [obfuscation, js]
+
+  - id: JS_FROMCHARCODE
+    description: "String.fromCharCode — classic obfuscation of strings"
+    pattern: "String\\.fromCharCode\\s*\\("
+    target: scripts
+    severity: MEDIUM
+    tags: [obfuscation, js]
+
+  - id: JS_UNESCAPE
+    description: "unescape() — legacy obfuscation"
+    pattern: "\\bunescape\\s*\\("
+    target: scripts
+    severity: MEDIUM
+    tags: [obfuscation, js]
+
+  - id: JS_DOCUMENT_WRITE_UNESCAPE
+    description: "document.write(unescape(...)) — canonical injection pattern"
+    pattern: "document\\.write\\s*\\(\\s*unescape"
+    target: scripts
+    severity: HIGH
+    tags: [injection, js]
+
+  - id: JS_LONG_HEX_STRING
+    description: "Long hex-encoded string — possible shellcode/obfuscated payload"
+    pattern: "(?:\\\\x[0-9a-fA-F]{2}){40,}"
+    target: scripts
+    severity: HIGH
+    tags: [obfuscation, js]
+
+  - id: JS_LONG_BASE64
+    description: "Long base64 blob in script — possible payload"
+    pattern: "[A-Za-z0-9+/]{500,}={0,2}"
+    target: scripts
+    severity: MEDIUM
+    tags: [obfuscation, payload]
+
+  # === Credential harvesting ===
+  - id: PASSWORD_INPUT_ON_HTTP
+    description: "Password input served over HTTP (not HTTPS)"
+    pattern: "<input[^>]+type\\s*=\\s*[\"']?password"
+    target: html
+    severity: HIGH
+    tags: [phishing, credential-harvest]
+    requires_http: true
+
+  - id: FORM_EXTERNAL_ACTION
+    description: "Form action points to a different domain than the page"
+    pattern: "<form[^>]+action\\s*=\\s*[\"']https?://"
+    target: forms
+    severity: MEDIUM
+    tags: [phishing, credential-harvest]
+
+  # === Hidden / suspicious iframes ===
+  - id: HIDDEN_IFRAME_ZERO_SIZE
+    description: "Iframe with zero width or height — classic drive-by pattern"
+    pattern: "<iframe[^>]+(?:width\\s*=\\s*[\"']?0|height\\s*=\\s*[\"']?0)"
+    target: html
+    severity: HIGH
+    tags: [drive-by, injection]
+
+  - id: HIDDEN_IFRAME_CSS
+    description: "Iframe hidden via CSS (display:none / visibility:hidden)"
+    pattern: "<iframe[^>]+style\\s*=\\s*[\"'][^\"']*(?:display\\s*:\\s*none|visibility\\s*:\\s*hidden)"
+    target: html
+    severity: HIGH
+    tags: [drive-by, injection]
+
+  # === Redirects ===
+  - id: META_REFRESH_EXTERNAL
+    description: "<meta http-equiv=refresh> redirect to another URL"
+    pattern: "<meta[^>]+http-equiv\\s*=\\s*[\"']?refresh[\"']?[^>]+url\\s*="
+    target: html
+    severity: LOW
+    tags: [redirect]
+
+  - id: JS_WINDOW_LOCATION_REDIRECT
+    description: "JS-based location redirect (window.location / document.location)"
+    pattern: "(?:window|document|top|self|parent)\\.location(?:\\.href)?\\s*="
+    target: scripts
+    severity: LOW
+    tags: [redirect, js]
+
+  # === Phishing keywords ===
+  - id: PHISHING_KEYWORDS
+    description: "Common phishing lure phrases"
+    pattern: "(?i)(?:verify your account|suspended|unusual activity|confirm your identity|update (?:your )?payment|session (?:has )?expired|unauthorized sign[- ]?in|account will be (?:closed|locked))"
+    target: html
+    severity: MEDIUM
+    tags: [phishing, social-engineering]
+
+  # === Anti-analysis ===
+  - id: ANTI_WEBDRIVER
+    description: "Script checks for navigator.webdriver — evading automated analysis"
+    pattern: "navigator\\.webdriver"
+    target: scripts
+    severity: MEDIUM
+    tags: [anti-analysis, evasion]
+
+  - id: DEBUGGER_STATEMENT
+    description: "Script contains debugger; statement — anti-analysis or dev leftover"
+    pattern: "\\bdebugger\\s*;"
+    target: scripts
+    severity: LOW
+    tags: [anti-analysis]
+
+  # === Malware downloads ===
+  - id: DIRECT_EXE_LINK
+    description: "Direct link to an executable"
+    pattern: "href\\s*=\\s*[\"'][^\"']+\\.(?:exe|scr|bat|cmd|msi|vbs|hta|jar|ps1)(?:[\"'?#])"
+    target: html
+    severity: HIGH
+    tags: [malware, download]
+
+  - id: ACTIVEX_OBJECT
+    description: "ActiveXObject reference — legacy IE exploit vector"
+    pattern: "ActiveXObject\\s*\\("
+    target: scripts
+    severity: MEDIUM
+    tags: [exploit, legacy]
+
+  # === Cryptojacking ===
+  - id: CRYPTO_MINER_REFERENCE
+    description: "Reference to known cryptojacker libraries"
+    pattern: "(?i)(?:coinhive|cryptonight|webminerpool|coin-?have|jsecoin|minerbnb)"
+    target: all
+    severity: HIGH
+    tags: [cryptojacking]
+
+  # === Clipboard hijack (scam pages) ===
+  - id: CLIPBOARD_WRITE
+    description: "Script writes to clipboard — possible clipboard hijack"
+    pattern: "navigator\\.clipboard\\.writeText\\s*\\("
+    target: scripts
+    severity: LOW
+    tags: [clipboard, scam]
